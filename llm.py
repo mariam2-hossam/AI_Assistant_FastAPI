@@ -6,7 +6,7 @@ from config import API_KEY, MODEL, URL
 
 def ask(messages):
     r = requests.post(URL, headers={"Authorization": "Bearer " + str(API_KEY)},
-                      json={"model": MODEL, "messages": messages, "temperature": 0}, timeout=90)
+                      json={"model": MODEL, "messages": messages, "temperature": 0.8}, timeout=90)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"] or ""
 
