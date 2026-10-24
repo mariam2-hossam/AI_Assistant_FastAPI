@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Assistant</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 15px; }
+  .box { border: 1px solid #ccc; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+  button { padding: 8px 14px; margin: 3px; cursor: pointer; }
+  .tabs button.active { background: #333; color: white; }
+  input[type=text] { width: 60%; padding: 8px; }
+  pre { background: #f4f4f4; padding: 10px; overflow-x: auto; }
+  table { border-collapse: collapse; margin-top: 10px; }
+  th, td { border: 1px solid #ccc; padding: 5px 10px; }
+  th { background: #eee; }
+  .user { background: #eef; padding: 8px; border-radius: 6px; margin: 8px 0; }
+  .bot { background: #fafafa; padding: 8px; border-radius: 6px; margin: 8px 0; }
+  .small { color: #666; font-size: 13px; }
+  .error { color: red; }
+  #chat-tab, #data-tab { display: none; }
+</style>
+</head>
+<body>
+<h1>AI Assistant</h1>
+
+<div class="tabs">
+  <button id="b-chat" onclick="showTab('chat')">Code assistant</button>
+  <button id="b-data" onclick="showTab('data')">Data analysis</button>
+</div>
+
+<!-- ================= code assistant ================= -->
+<div id="chat-tab">
+  <div class="box">
+    <div id="log"></div>
+    <p class="error" id="chat-error"></p>
+    <input type="text" id="msg" placeholder="Ask a programming question" onkeydown="if (event.key === 'Enter') sendChat()">
+    <button onclick="sendChat()">Send</button>
+    <button id="chat-mic" onclick="recordForChat()">Mic</button>
+    <button onclick="clearChat()">Clear chat</button>
+  </div>
+</div>
+
+<!-- ================= data analysis ================= -->
+<div id="data-tab">
+  <div class="box">
+    <h3>1. Dataset</h3>
+    <input type="file" id="file" accept=".csv,.xlsx">
+    <button onclick="uploadDataset()">Upload</button>
+    <div id="info"></div>
+  </div>
+
+  <div class="box">
+    <h3>2. Ask a question</h3>
+    Language:
+    <select id="lang">
+      <option value="">Auto</option>
+      <option value="ar">Arabic</option>
+      <option value="en">English</option>
+    </select>
+    <button id="rec" onclick="recordForData()">Start recording</button>
+    <br>
+    <input type="text" id="question" placeholder="or type your question here">
+    <button onclick="askText()">Ask</button>
+  </div>
+
+  <div class="box">
+    <h3>Result</h3>
+    <p class="error" id="error"></p>
+    <p>Heard: <b id="heard" dir="auto"></b></p>
+    <pre id="sql"></pre>
+    <div id="table"></div>
+    <p id="explanation" dir="auto"></p>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let datasetId = null;
+
+function showTab(name) {
+  $('chat-tab').style.display = name === 'chat' ? 'block' : 'none';
+  $('data-tab').style.display = name === 'data' ? 'block' : 'none';
+  $('b-chat').className = name === 'chat' ? 'active' : '';
+  $('b-data').className = name === 'data' ? 'active' : '';
+}
+
+// records the microphone, and gives the audio blob to the function "done"
+let recorder = null;
+async function record(button, done) {
+  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = e => chunks.push(e.data);
+  const old = button.textContent;
+  recorder.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    button.textContent = old;
+    done(new Blob(chunks, { type: recorder.mimeType }));
+  };
+  recorder.start();
+  button.textContent = 'Stop';
+}
+
+// ---------- code assistant ----------
+
+// shows the text of a message: normal text, and code blocks written between ```
+function render(box, text, final) {
+  box.innerHTML = '';
+  text.split('```').forEach((part, i) => {
+    if (i % 2 === 0) {
+      const p = document.createElement('div');
+      p.style.whiteSpace = 'pre-wrap';
+      p.dir = 'auto';
+      p.textContent = part;
+      box.appendChild(p);
+      return;
+    }
+    const nl = part.indexOf('\n');
+    const lang = nl === -1 ? part.trim() : part.slice(0, nl).trim();
+    const code = nl === -1 ? '' : part.slice(nl + 1);
+    const pre = document.createElement('pre');
+    const c = document.createElement('code');
+    c.textContent = code;
+    if (lang) c.className = 'language-' + lang;
+    pre.appendChild(c);
+    box.appendChild(pre);
+    if (!final) return;
+    if (window.hljs) hljs.highlightElement(c);
+    if (lang === 'python' || lang === 'py') {
+      const out = document.createElement('pre');
+      const btn = document.createElement('button');
+      btn.textContent = 'Run code';
+      btn.onclick = async () => {
+        const res = await fetch('/run-code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ code: code }) });
+        const data = await res.json();
+        out.textContent = (data.stdout || '') + (data.stderr ? '\nError:\n' + data.stderr : '');
+      };
+      box.appendChild(btn);
+      box.appendChild(out);
+    }
+  });
+}
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = role === 'user' ? 'user' : 'bot';
+  $('log').appendChild(div);
+  render(div, text, true);
+  return div;
+}
+
+async function loadHistory() {
+  const res = await fetch('/chat/history');
+  (await res.json()).forEach(m => addMessage(m.role, m.content));
+}
+
+async function sendChat(text) {
+  const question = (text || $('msg').value).trim();
+  if (!question) return;
+  $('msg').value = '';
+  $('chat-error').textContent = '';
+  addMessage('user', question);
+  const bot = addMessage('assistant', '...');
+
+  const res = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ question: question }) });
+  if (!res.ok) {
+    $('chat-error').textContent = (await res.json()).detail;
+    bot.remove();
+    return;
+  }
+
+  // the answer comes piece by piece
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let answer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    answer += decoder.decode(value, { stream: true });
+    render(bot, answer, false);
+  }
+  render(bot, answer, true);
+
+  const sources = decodeURIComponent(res.headers.get('X-Sources') || '');
+  if (sources) {
+    const note = document.createElement('div');
+    note.className = 'small';
+    note.textContent = 'Sources: ' + sources;
+    bot.appendChild(note);
+  }
+}
+
+async function recordForChat() {
+  record($('chat-mic'), async blob => {
+    const form = new FormData();
+    form.append('audio', blob, 'voice.webm');
+    const res = await fetch('/transcribe', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) { $('chat-error').textContent = data.detail; return; }
+    if (data.text) sendChat(data.text);
+  });
+}
+
+async function clearChat() {
+  await fetch('/chat/clear', { method: 'POST' });
+  $('log').innerHTML = '';
+}
+
+// ---------- data analysis ----------
+
+async function send(url, options) {
+  $('error').textContent = '';
+  const res = await fetch(url, options);
+  const data = await res.json();
+  if (!res.ok) {
+    $('error').textContent = data.detail;
+    return null;
+  }
+  return data;
+}
+
+async function uploadDataset() {
+  const file = $('file').files[0];
+  if (!file) { alert('Choose a file first'); return; }
+  const form = new FormData();
+  form.append('file', file);
+  const data = await send('/datasets', { method: 'POST', body: form });
+  if (!data) return;
+  datasetId = data.dataset_id;
+  const names = data.columns.map(c => c.name).join(', ');
+  $('info').textContent = 'Table ' + data.table + ' - ' + data.row_count + ' rows - columns: ' + names;
+}
+
+function showResult(data) {
+  if (!data) return;
+  $('heard').textContent = data.transcription || data.question;
+  $('sql').textContent = data.sql;
+  $('explanation').textContent = data.explanation;
+
+  const table = document.createElement('table');
+  const head = table.insertRow();
+  data.columns.forEach(c => { const th = document.createElement('th'); th.textContent = c; head.appendChild(th); });
+  data.rows.forEach(row => {
+    const tr = table.insertRow();
+    row.forEach(v => { const td = tr.insertCell(); td.textContent = v === null ? '' : v; td.dir = 'auto'; });
+  });
+  $('table').innerHTML = '';
+  $('table').appendChild(table);
+  if (data.truncated) $('table').append('Only the first rows are shown.');
+}
+
+async function askText() {
+  if (!datasetId) { alert('Upload a dataset first'); return; }
+  showResult(await send('/analyze-text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataset_id: datasetId, question: $('question').value })
+  }));
+}
+
+function recordForData() {
+  if (!datasetId) { alert('Upload a dataset first'); return; }
+  record($('rec'), async blob => {
+    const form = new FormData();
+    form.append('dataset_id', datasetId);
+    form.append('language', $('lang').value);
+    form.append('audio', blob, 'voice.webm');
+    showResult(await send('/analyze-voice', { method: 'POST', body: form }));
+  });
+}
+
+showTab('chat');
+loadHistory();
+</script>
+</body>
+</html>
