@@ -10,7 +10,6 @@ One FastAPI app with two parts:
 ## Run
 
     pip install -r requirements.txt
-    copy .env.example to .env and add your OpenRouter key
     python ingest.py          (once, loads HumanEval into Qdrant, needs internet)
     python -m uvicorn main:app
 
